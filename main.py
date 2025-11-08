@@ -16,40 +16,17 @@ PAGE_IMAGE_DIR = "out/converted_images"
 PARSED_SECTIONS_DIR = "out/parsed_sections"
 MODEL_PATH = "models/yolov12s-doclaynet.pt"
 
-os.environ["GOOGLE_API_KEY"] = "AIzaSyDnYkOL6352jbCCA1KCucmWMCpT4Jlvjcg"
+os.environ["GOOGLE_API_KEY"] = ""
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 app = FastAPI()
 etl_pipeline = ETLPipeline(MODEL_PATH, PAGE_IMAGE_DIR, PARSED_SECTIONS_DIR)
 
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Document Processing API"}
 
-
-@app.get("/images/pdf")
-def get_images_pdf(file_name: str):
-    """
-    Returns a PDF file created from all boxed_layout images for the given file name.
-    file_name: The base name of the file (without extension) as uploaded/processed.
-    """
-    # Find all boxed_layout.png images for this file in parsed_sections
-    base_name = os.path.splitext(file_name)[0]
-    section_dirs = sorted(glob.glob(os.path.join(PARSED_SECTIONS_DIR, f"{base_name}_page_*")))
-    boxed_images = []
-    for section_dir in section_dirs:
-        boxed_img_path = os.path.join(section_dir, "boxed_layout.png")
-        if os.path.exists(boxed_img_path):
-            boxed_images.append(boxed_img_path)
-    if not boxed_images:
-        raise HTTPException(status_code=404, detail="No boxed_layout images found for this file.")
-    pdf_path = os.path.join(PARSED_SECTIONS_DIR, f"{base_name}_boxed_layouts.pdf")
-    pdf = FPDF(unit="pt", format="A4")
-    for img_path in boxed_images:
-        pdf.add_page()
-        pdf.image(img_path, x=0, y=0, w=pdf.w, h=pdf.h)
-    pdf.output(pdf_path)
-    return FileResponse(pdf_path, media_type="application/pdf", filename=f"{base_name}_boxed_layouts.pdf")
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
@@ -73,9 +50,7 @@ async def upload(file: UploadFile = File(...)):
                 "content": parsed_content
             })
 
-        final_json_output = etl_pipeline.MDocAgent(initial_json_output)
-
-        
+        final_json_output = etl_pipeline.EvaluationAgent(initial_json_output)
 
         end = time.time()
         print(f"Total processing time: {end - start:.2f} seconds")
@@ -87,74 +62,4 @@ async def upload(file: UploadFile = File(...)):
     finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-
-@app.post("/chat")
-async def ChatBot(request: Request):
-    
-    
-    gemini = genai.GenerativeModel("gemini-2.0-flash", safety_settings={
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    })
-    
-    # message, documentContext, conversationHistory
-    data = await request.json()
-    document_context = data.get("documentContext")
-    conversation_history = data.get("conversationHistory")
-    message = data.get("message")
-
-    try:
-
-        prompt = f"""
-You are a "Legal Analyst Assistant." Your persona is that of an expert, precise, and efficient professional assistant.
-Your primary goal is to help users—whether they are legal professionals or laypeople—instantly find, summarize, and understand any detail within a legal document.
-
-You will be given all necessary information in the [TASK PAYLOAD] section below. This payload contains:
-    1. [DOCUMENT_JSON]: The complete, pre-analyzed data from the legal document. This is your one and only source of truth.
-    2. [CHAT_HISTORY]: A list of the previous questions and answers in this conversation.
-    3. [USER_QUESTION]: The user's new question.
-
-CRITICAL GUARDRAILS (MUST FOLLOW)
-1. NEVER FABRICATE, OPINE, OR PREDICT: Your most important rule is to stick 100% to the provided [DOCUMENT_JSON].
-   - DO NOT: Invent information, give your own opinions, suggest actions ("you should..."), or predict legal outcomes ("this clause is unenforceable...").
-   - DO: You can and should report the analytical findings from the JSON, such as the analysis section (e.g., "The pre-analysis of this clause notes its fairness as 'Landlord-Favorable'"). You are surfacing the existing analysis, not creating your own.
-
-2. BE A PRECISE DATA RETRIEVER: Do not just chat. Your main job is to fetch and present the exact information the user asks for.
-
-3. ADAPT TO THE USER'S EXPERTISE:
-   - If the user asks a simple, direct question (e.g., "What does this mean for me?"), prioritize the layman_implication.
-   - If the user asks a professional or technical question (e.g., "Summarize the indemnification clause"), prioritize the summary and the analysis list.
-
-
-
-HOW TO ANSWER (YOUR LOGIC)
-1. First, review the [CHAT_HISTORY] for context.
-2. Next, analyze the [USER_QUESTION] to understand the user's intent and likely expertise.
-3. Then, find the answer only within the [DOCUMENT_JSON]:
-   - For "Summarize document": Use document_analysis.abstractive_summary and document_analysis.themes.
-   - For "Who/What/Where/How Much": Query key_data_points by entity_type and report the label and attributes.
-   - For "What does clause X say?" (Professional): Provide the summary and list all items from the analysis list.
-   - For "What does clause X mean?" (Layperson): Provide the layman_implication and add context from the analysis list.
-   - For "When/Deadlines": Query key_deadlines and list the event, date, and explanation.
-   - For "What does 'Lessor' mean?": Query legal_terminology and provide the explanation.
-4. Finally, formulate a direct, factual answer based on the data you found.
-
-Your output must always be in clear, natural language suitable for the user's question type.
-Return only the final answer text — do not wrap it in JSON unless explicitly requested.
-[TASK PAYLOAD]:
-[DOCUMENT_JSON]:
-{json.dumps(document_context)}
-[CHAT_HISTORY]:
-{json.dumps(conversation_history)}
-[USER_QUESTION]:
-{message}
-
-"""
-        response = gemini.generate_content(prompt)
-        return response.text
-    
-    except Exception as e:
-        print(f"An error occurred in chatbot: {e}")
 
